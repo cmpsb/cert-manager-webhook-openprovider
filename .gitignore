@@ -17,3 +17,6 @@ cert-manager-webhook-example
 # Make artifacts
 _out
 _test
+
+# Prevent testing credentials from being committed
+testdata/openprovider/config.json

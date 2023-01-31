@@ -1,6 +1,7 @@
 GO ?= $(shell which go)
 OS ?= $(shell $(GO) env GOOS)
 ARCH ?= $(shell $(GO) env GOARCH)
+SWAGGER ?= "$(GOPATH)/bin/swagger"
 
 IMAGE_NAME := "webhook"
 IMAGE_TAG := "latest"
@@ -33,10 +34,21 @@ clean-kubebuilder:
 build:
 	docker build -t "$(IMAGE_NAME):$(IMAGE_TAG)" .
 
-.PHONY: rendered-manifest.yaml
+.PHONY: rendered-manifest.yaml api-client
 rendered-manifest.yaml:
 	helm template \
-	    --name example-webhook \
+	    --name openprovider-webhook \
             --set image.repository=$(IMAGE_NAME) \
             --set image.tag=$(IMAGE_TAG) \
-            deploy/example-webhook > "$(OUT)/rendered-manifest.yaml"
+            deploy/openprovider-webhook > "$(OUT)/rendered-manifest.yaml"
+
+api-client:
+	$(SWAGGER) generate client -f https://docs.openprovider.com/swagger.json \
+		--default-scheme=https \
+		-c opapi/client -m opapi/models \
+		--tags Auth --tags ZoneService \
+		-M zoneRecord -M zoneRecordUpdates -M zoneUpdateZoneRequest -M authLoginRequest -M authLoginResponse \
+		-M authLoginResponseData -M errorError -M zoneCreateZoneRequest -M zoneZoneBoolResponse -M zoneGetZoneResponse \
+		-M zoneListZonesResponse -M errorWarning -M zoneDomain -M zoneZone -M zoneListZonesResponseData \
+		-M zoneRecordWithOriginal -M zoneDomain -M zonePremiumDnsData -M zoneZoneBoolResponseData \
+		-M historyZoneHistory -M recordRecordInfo -M zoneSectigoData

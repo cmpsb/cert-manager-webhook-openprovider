@@ -20,5 +20,6 @@ FROM alpine:3.9
 RUN apk add --no-cache ca-certificates
 
 COPY --from=build /workspace/webhook /usr/local/bin/webhook
+RUN mkdir -m 0700 /var/cache/cert-manager-webhook-openprovider
 
 ENTRYPOINT ["webhook"]
