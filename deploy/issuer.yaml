@@ -1,0 +1,15 @@
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: le-staging
+spec:
+  acme:
+    email: <the address used to sign up to LE>
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    privateKeySecretRef:
+      name: le-staging-issuer-key
+    solvers:
+      - dns01:
+          webhook:
+            groupName: cert-manager-webhook-openprovider.wukl.net
+            solverName: openprovider
