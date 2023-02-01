@@ -112,7 +112,7 @@ func (c *openproviderDNSProviderSolver) authenticate(
 	if len(username) == 0 && len(password) == 0 {
 		secretName := cfg.Secret.Name
 		if len(secretName) == 0 {
-			secretName = "cert-manager-webhook-openprovider-credentials"
+			secretName = "openprovider-credentials"
 		}
 
 		secret, err := c.client.CoreV1().
