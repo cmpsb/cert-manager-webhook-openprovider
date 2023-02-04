@@ -3,6 +3,7 @@ include:
 
 publish:
   stage: production
+  image: registry.wukl.net/wukl/cert-manager-webhook-openprovider/publish-image:1
   script:
     - helm package deploy/openprovider-webhook
     - VERSION=$(yq -r .version < deploy/openprovider-webhook/Chart.yaml)
