@@ -13,7 +13,7 @@ certManager:
   serviceAccountName: cert-manager
 
 image:
-  repository: registry.wukl.net/wukl/cert-manager-webhook-openprovider
+  repository: registry.wukl.net/wukl/cert-manager-webhook-openprovider/master
   tag: latest
   pullPolicy: IfNotPresent
 
