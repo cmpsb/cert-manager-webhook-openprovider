@@ -144,6 +144,9 @@ func (c *openproviderDNSProviderSolver) authenticate(
 		password = string(passwordRaw)
 	}
 
+	username = strings.TrimSpace(username)
+	password = strings.TrimSpace(password)
+
 	transport := httptransport.New(tcfg.Host, tcfg.BasePath, tcfg.Schemes)
 	apiClient := client.New(transport, nil)
 
