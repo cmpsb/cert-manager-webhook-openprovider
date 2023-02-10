@@ -7,8 +7,8 @@ This webhook provides support for DNS01 ACME verification using the [Openprovide
 ### Helm
 
 ```shell
-$ git clone https://git.wukl.net/wukl/cert-manager-webhook-openprovider
-$ helm install cert-manager-webhook-openprovider --namespace=cert-manager ./deploy/openprovider-webhook
+$ helm repo add cert-manager-webhook-openprovider https://git.wukl.net/api/v4/projects/149/packages/helm/master
+$ helm upgrade --install -n cert-manager cert-manager-webhook-openprovider cert-manager-webhook-openprovider-master/openprovider-webhook
 ```
 
 
