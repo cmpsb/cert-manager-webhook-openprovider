@@ -1,11 +1,12 @@
 apiVersion: cert-manager.io/v1
-kind: Issuer
+kind: ClusterIssuer  # Make this Issuer if you don't want to serve the whole cluster
 metadata:
   name: le-staging
 spec:
   acme:
     email: <the address used to sign up to LE>
-    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    server: https://acme-staging-v02.api.letsencrypt.org/directory  # Testing usage
+    # server: https://acme-v02.api.letsencrypt.org/directory  # Production usage
     privateKeySecretRef:
       name: le-staging-issuer-key
     solvers:
@@ -13,3 +14,10 @@ spec:
           webhook:
             groupName: cert-manager-webhook-openprovider.wukl.net
             solverName: openprovider
+            # config:
+            #   ttl: 900  # Minimum is 600
+            #   secret:
+            #     name: openprovider-credentials
+            #     usernameKey: username
+            #     passwordKey: password
+            #   # There are more options, but they are not useful or outright dangerous
