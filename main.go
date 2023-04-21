@@ -67,12 +67,26 @@ type openproviderDNSProviderConfig struct {
 	RestrictIp string `json:"restrictIp,omitempty"`
 
 	Ttl int32 `json:"ttl,omitempty"`
+
+	Nameservers []string `json:"nameservers,omitempty"`
 }
 
 type authTokenCache struct {
 	Token    string `json:"token,omitempty"`
 	Expires  int64  `json:"expires,omitempty"`
 	CredHash string `json:"credHash,omitempty"`
+}
+
+func (c *openproviderDNSProviderConfig) GetNameservers() []string {
+	if len(c.Nameservers) == 0 {
+		return []string {
+			"ns1.openprovider.nl:53",
+			"ns2.openprovider.be:53",
+			"ns3.openprovider.eu:53",
+		}
+	}
+
+	return c.Nameservers
 }
 
 func (c *openproviderDNSProviderConfig) GetCredHash() string {
@@ -188,9 +202,10 @@ func (c *openproviderDNSProviderSolver) authenticate(
 func (c *openproviderDNSProviderSolver) NewDnsEntryFromChallenge(
 	ch *v1alpha1.ChallengeRequest,
 	cfg *openproviderDNSProviderConfig,
+	zone string,
 ) *models.ZoneRecord {
 	return &models.ZoneRecord{
-		Name:  strings.ToLower(extractRecordName(ch.ResolvedFQDN, ch.ResolvedZone)),
+		Name:  strings.ToLower(extractRecordName(ch.ResolvedFQDN, zone)),
 		TTL:   cfg.Ttl,
 		Type:  "TXT",
 		Value: ch.Key,
@@ -258,9 +273,10 @@ func (c *openproviderDNSProviderSolver) Present(ch *v1alpha1.ChallengeRequest) e
 		return err
 	}
 
-	zoneName := getZone(ch.ResolvedZone)
+	zoneFqdn, err := util.FindZoneByFqdn(ch.ResolvedZone, cfg.GetNameservers())
+	zoneName := getZone(zoneFqdn)
 
-	newRecord := c.NewDnsEntryFromChallenge(ch, cfg)
+	newRecord := c.NewDnsEntryFromChallenge(ch, cfg, zoneName)
 	existingRecord, err := c.findExistingRecord(apiClient, zoneName, newRecord)
 	if err != nil {
 		return err
@@ -308,9 +324,10 @@ func (c *openproviderDNSProviderSolver) CleanUp(ch *v1alpha1.ChallengeRequest) e
 		return err
 	}
 
-	zoneName := getZone(ch.ResolvedZone)
+	zoneFqdn, err := util.FindZoneByFqdn(ch.ResolvedZone, cfg.GetNameservers())
+	zoneName := getZone(zoneFqdn)
 
-	refRecord := c.NewDnsEntryFromChallenge(ch, cfg)
+	refRecord := c.NewDnsEntryFromChallenge(ch, cfg, zoneName)
 	existingRecord, err := c.findExistingRecord(apiClient, zoneName, refRecord)
 	if err != nil {
 		return err
