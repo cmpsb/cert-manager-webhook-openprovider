@@ -28,6 +28,9 @@ import (
 	"github.com/cert-manager/cert-manager/pkg/acme/webhook/cmd"
 )
 
+// reasonable upper bound for DNS discovery
+const findZoneTimeout = 20 * time.Second
+
 var (
 	GroupName = os.Getenv("GROUP_NAME")
 	CacheDir  = os.Getenv("CMWO_CACHE_DIR")
@@ -107,6 +110,7 @@ func (c *openproviderDNSProviderSolver) authenticate(
 	ch *v1alpha1.ChallengeRequest,
 	cfg *openproviderDNSProviderConfig,
 ) (*client.RESTAPI, error) {
+	c.logger.Printf("[auth] start (ns=%s, api=%s)", ch.ResourceNamespace, cfg.ApiUrl)
 	tcfg := client.DefaultTransportConfig()
 	if len(cfg.ApiUrl) > 0 {
 		u, err := url.Parse(cfg.ApiUrl)
@@ -124,6 +128,7 @@ func (c *openproviderDNSProviderSolver) authenticate(
 	username := cfg.Username
 	password := cfg.Password
 	if len(username) == 0 && len(password) == 0 {
+		c.logger.Printf("[auth] loading credentials from secret in ns=%s", ch.ResourceNamespace)
 		secretName := cfg.Secret.Name
 		if len(secretName) == 0 {
 			secretName = "openprovider-credentials"
@@ -168,6 +173,7 @@ func (c *openproviderDNSProviderSolver) authenticate(
 	cachedToken := c.loadAuthTokenCache()
 	now := time.Now().Unix()
 	if now > cachedToken.Expires || cachedToken.CredHash != credHash {
+		c.logger.Printf("[auth] no valid cached token (expired=%t, credMatch=%t), logging in", now > cachedToken.Expires, cachedToken.CredHash == credHash)
 		restrictIp := cfg.RestrictIp
 		if len(restrictIp) == 0 {
 			restrictIp = "0.0.0.0"
@@ -190,10 +196,12 @@ func (c *openproviderDNSProviderSolver) authenticate(
 		}
 
 		c.storeAuthTokenCache(cachedToken)
+		c.logger.Printf("[auth] obtained token (exp=%d)", cachedToken.Expires)
+	} else {
+		c.logger.Printf("[auth] using cached token (exp=%d)", cachedToken.Expires)
 	}
 
 	token := httptransport.BearerToken(cachedToken.Token)
-
 	transport.DefaultAuthentication = token
 
 	return apiClient, nil
@@ -216,13 +224,20 @@ func (c *openproviderDNSProviderSolver) getDnsZone(
 	apiClient *client.RESTAPI,
 	zoneName string,
 ) ([]*models.RecordRecordInfo, error) {
+	c.logger.Printf("[zone] fetching zone records for %s", zoneName)
+
 	trueConcrete := true
 	res, err := apiClient.ZoneService.GetZone(
 		zone_service.NewGetZoneParams().WithName(zoneName).WithWithRecords(&trueConcrete),
 		nil,
 	)
 	if err != nil {
+		c.logger.Printf("[zone] GetZone error for %s: %v", zoneName, err)
 		return nil, err
+	}
+
+	if res != nil && res.Payload != nil && res.Payload.Data != nil {
+		c.logger.Printf("[zone] %s: %d records", zoneName, len(res.Payload.Data.Records))
 	}
 
 	return res.Payload.Data.Records, nil
@@ -248,11 +263,12 @@ func (c *openproviderDNSProviderSolver) findExistingRecord(
 		return nil, err
 	}
 
-	fqdn := record.Name + "." + zoneName
+	fqdn := strings.ToLower(record.Name + "." + zoneName)
 	quotedValue := "\"" + record.Value + "\""
 
 	for _, v := range records {
-		if v.Name == fqdn && v.Type == record.Type && (v.Value == record.Value || v.Value == quotedValue) {
+		vName := strings.TrimSuffix(strings.ToLower(v.Name), ".")
+		if vName == fqdn && strings.EqualFold(v.Type, record.Type) && (v.Value == record.Value || v.Value == quotedValue) {
 			return v, nil
 		}
 	}
@@ -260,23 +276,39 @@ func (c *openproviderDNSProviderSolver) findExistingRecord(
 	return nil, nil
 }
 
-// Present is responsible for actually presenting the DNS record with the
-// DNS provider.
+// Present is responsible for actually presenting the DNS record with the DNS provider.
 func (c *openproviderDNSProviderSolver) Present(ch *v1alpha1.ChallengeRequest) error {
 	cfg, err := loadConfig(ch.Config)
 	if err != nil {
 		return err
 	}
 
+	c.logger.Printf("[present] start resolvedFQDN=%s resolvedZone(from cm)=%s ttl=%d ns=%v",ch.ResolvedFQDN, ch.ResolvedZone, cfg.Ttl, cfg.GetNameservers())
 	apiClient, err := c.authenticate(ch, cfg)
 	if err != nil {
 		return err
 	}
 
-	zoneFqdn, err := util.FindZoneByFqdn(ch.ResolvedZone, cfg.GetNameservers())
+	ctx, cancel := context.WithTimeout(context.Background(), findZoneTimeout)
+	defer cancel()
+
+	zoneFqdn, err := util.FindZoneByFqdn(ctx, ch.ResolvedFQDN, cfg.GetNameservers())
+	if err != nil {
+		c.logger.Printf("[present] FindZoneByFqdn error: %v (resolvedFQDN=%s, ns=%v)", err, ch.ResolvedFQDN, cfg.GetNameservers())
+		return err
+	}
+
 	zoneName := getZone(zoneFqdn)
+	if !strings.Contains(zoneName, ".") { // likely a public suffix like "com"
+		err := fmt.Errorf("discovered zone %q looks like a public suffix; refusing to update (fqdn=%s)", zoneName, ch.ResolvedFQDN)
+		c.logger.Printf("[present] %v", err)
+		return err
+    }
+	c.logger.Printf("[present] discovered zoneFqdn=%s zoneName=%s", zoneFqdn, zoneName)
 
 	newRecord := c.NewDnsEntryFromChallenge(ch, cfg, zoneName)
+	c.logger.Printf("[present] desired record: Name=%s Type=%s TTL=%d Value=%s", newRecord.Name, newRecord.Type, newRecord.TTL, newRecord.Value)
+
 	existingRecord, err := c.findExistingRecord(apiClient, zoneName, newRecord)
 	if err != nil {
 		return err
@@ -284,6 +316,7 @@ func (c *openproviderDNSProviderSolver) Present(ch *v1alpha1.ChallengeRequest) e
 
 	var recordUpdates models.ZoneRecordUpdates
 	if existingRecord != nil {
+		c.logger.Printf("[present] existing record found; will UPDATE")
 		originalRecord := recordInfoToZoneRecord(existingRecord, zoneName)
 		recordUpdates = models.ZoneRecordUpdates{
 			Update: []*models.ZoneRecordWithOriginal{
@@ -294,19 +327,26 @@ func (c *openproviderDNSProviderSolver) Present(ch *v1alpha1.ChallengeRequest) e
 			},
 		}
 	} else {
+		c.logger.Printf("[present] no existing record; will ADD")
 		recordUpdates = models.ZoneRecordUpdates{
 			Add: []*models.ZoneRecord{newRecord},
 		}
 	}
 
-	_, err = apiClient.ZoneService.UpdateZone(zone_service.NewUpdateZoneParams().WithName(zoneName).WithBody(
+	res, err := apiClient.ZoneService.UpdateZone(zone_service.NewUpdateZoneParams().WithName(zoneName).WithBody(
 		&models.ZoneUpdateZoneRequest{
 			Name:    zoneName,
 			Records: &recordUpdates,
 		},
 	), nil)
+
 	if err != nil {
+		c.logger.Printf("[present] UpdateZone error for %s: %v", zoneName, err)
 		return err
+	}
+
+	if res != nil && res.Payload != nil && res.Payload.Data != nil {
+		c.logger.Printf("[present] UpdateZone OK for %s", zoneName)
 	}
 
 	return nil
@@ -319,27 +359,46 @@ func (c *openproviderDNSProviderSolver) CleanUp(ch *v1alpha1.ChallengeRequest) e
 		return err
 	}
 
+	c.logger.Printf("[cleanup] start resolvedFQDN=%s resolvedZone(from cm)=%s ttl=%d ns=%v", ch.ResolvedFQDN, ch.ResolvedZone, cfg.Ttl, cfg.GetNameservers())
+
 	apiClient, err := c.authenticate(ch, cfg)
 	if err != nil {
 		return err
 	}
 
-	zoneFqdn, err := util.FindZoneByFqdn(ch.ResolvedZone, cfg.GetNameservers())
+	ctx, cancel := context.WithTimeout(context.Background(), findZoneTimeout)
+	defer cancel()
+
+	zoneFqdn, err := util.FindZoneByFqdn(ctx, ch.ResolvedFQDN, cfg.GetNameservers())
+	if err != nil {
+		c.logger.Printf("[cleanup] FindZoneByFqdn error: %v (resolvedFQDN=%s, ns=%v)", err, ch.ResolvedFQDN, cfg.GetNameservers())
+		return err
+	}
+
 	zoneName := getZone(zoneFqdn)
+	if !strings.Contains(zoneName, ".") {
+		err := fmt.Errorf("discovered zone %q looks like a public suffix; refusing to update (fqdn=%s)", zoneName, ch.ResolvedFQDN)
+		c.logger.Printf("[cleanup] %v", err)
+		return err
+	}
+
+	c.logger.Printf("[cleanup] discovered zoneFqdn=%s zoneName=%s", zoneFqdn, zoneName)
 
 	refRecord := c.NewDnsEntryFromChallenge(ch, cfg, zoneName)
+	c.logger.Printf("[cleanup] target record: Name=%s Type=%s TTL=%d Value=%s", refRecord.Name, refRecord.Type, refRecord.TTL, refRecord.Value)
+
 	existingRecord, err := c.findExistingRecord(apiClient, zoneName, refRecord)
 	if err != nil {
 		return err
 	}
 
 	if existingRecord == nil {
-		c.logger.Printf("WARNING: asked to delete record %+v, but could not find one", refRecord)
+		c.logger.Printf("WARNING [cleanup]: asked to delete record %+v, but could not find one", refRecord)
 		return nil
 	}
 	existingRecordZoneRecord := recordInfoToZoneRecord(existingRecord, zoneName)
 
-	_, err = apiClient.ZoneService.UpdateZone(zone_service.NewUpdateZoneParams().WithName(zoneName).WithBody(
+	res, err := apiClient.ZoneService.UpdateZone(zone_service.NewUpdateZoneParams().WithName(zoneName).WithBody(
 		&models.ZoneUpdateZoneRequest{
 			Name: zoneName,
 			Records: &models.ZoneRecordUpdates{
@@ -349,8 +408,14 @@ func (c *openproviderDNSProviderSolver) CleanUp(ch *v1alpha1.ChallengeRequest) e
 			},
 		},
 	), nil)
+
 	if err != nil {
+		c.logger.Printf("[cleanup] UpdateZone error for %s: %v", zoneName, err)
 		return err
+	}
+
+	if res != nil && res.Payload != nil && res.Payload.Data != nil {
+		c.logger.Printf("[cleanup] UpdateZone OK for %s", zoneName)
 	}
 
 	return nil
